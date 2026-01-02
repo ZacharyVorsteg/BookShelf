@@ -1,18 +1,30 @@
 import Foundation
 
-@MainActor
-class BookViewModel: ObservableObject {
-    @Published private(set) var books: [Book] = []
+@Observable
+class BookViewModel {
+    private let storageKey = "savedBooks"
 
-    private let storageKey = "bookshelf_books"
+    var books: [Book] = []
+    var searchText: String = ""
+
+    var filteredBooks: [Book] {
+        if searchText.isEmpty {
+            return books.sorted { $0.dateAdded > $1.dateAdded }
+        }
+        return books.filter { book in
+            book.title.localizedCaseInsensitiveContains(searchText) ||
+            book.author.localizedCaseInsensitiveContains(searchText) ||
+            book.isbn.localizedCaseInsensitiveContains(searchText)
+        }.sorted { $0.dateAdded > $1.dateAdded }
+    }
 
     init() {
         loadBooks()
     }
 
-    func addBook(_ book: Book) {
+    func addBook(title: String, author: String, isbn: String) {
+        let book = Book(title: title, author: author, isbn: isbn)
         books.append(book)
-        books.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
         saveBooks()
     }
 
@@ -21,17 +33,24 @@ class BookViewModel: ObservableObject {
         saveBooks()
     }
 
-    func findDuplicate(title: String, author: String, isbn: String?) -> Book? {
-        if let isbn = isbn, !isbn.isEmpty {
-            if let match = books.first(where: { $0.isbn?.lowercased() == isbn.lowercased() }) {
-                return match
-            }
+    func deleteBooks(at offsets: IndexSet) {
+        let booksToDelete = offsets.map { filteredBooks[$0] }
+        for book in booksToDelete {
+            books.removeAll { $0.id == book.id }
         }
+        saveBooks()
+    }
 
-        return books.first { book in
-            book.title.lowercased() == title.lowercased() &&
-            book.author.lowercased() == author.lowercased()
+    func isDuplicate(title: String, author: String) -> Bool {
+        books.contains { book in
+            book.title.localizedCaseInsensitiveCompare(title) == .orderedSame &&
+            book.author.localizedCaseInsensitiveCompare(author) == .orderedSame
         }
+    }
+
+    func isbnExists(_ isbn: String) -> Bool {
+        guard !isbn.isEmpty else { return false }
+        return books.contains { $0.isbn == isbn }
     }
 
     private func saveBooks() {

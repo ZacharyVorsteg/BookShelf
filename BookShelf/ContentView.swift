@@ -1,20 +1,12 @@
 import SwiftUI
 
 struct ContentView: View {
-    @StateObject private var viewModel = BookViewModel()
+    @State private var viewModel = BookViewModel()
     @State private var showingAddSheet = false
-    @State private var searchText = ""
-
-    var filteredBooks: [Book] {
-        if searchText.isEmpty {
-            return viewModel.books
-        }
-        return viewModel.books.filter { book in
-            book.title.localizedCaseInsensitiveContains(searchText) ||
-            book.author.localizedCaseInsensitiveContains(searchText) ||
-            (book.isbn?.localizedCaseInsensitiveContains(searchText) ?? false)
-        }
-    }
+    @State private var newTitle = ""
+    @State private var newAuthor = ""
+    @State private var newISBN = ""
+    @State private var showDuplicateAlert = false
 
     var body: some View {
         NavigationStack {
@@ -23,26 +15,21 @@ struct ContentView: View {
                     ContentUnavailableView(
                         "No Books Yet",
                         systemImage: "books.vertical",
-                        description: Text("Tap + to add books to your collection")
+                        description: Text("Tap + to add your first book")
                     )
                 } else {
                     List {
-                        ForEach(filteredBooks) { book in
+                        ForEach(viewModel.filteredBooks) { book in
                             BookRow(book: book)
                         }
-                        .onDelete { indexSet in
-                            let booksToDelete = indexSet.map { filteredBooks[$0] }
-                            for book in booksToDelete {
-                                viewModel.deleteBook(book)
-                            }
-                        }
+                        .onDelete(perform: viewModel.deleteBooks)
                     }
-                    .searchable(text: $searchText, prompt: "Search title, author, or ISBN")
+                    .searchable(text: $viewModel.searchText, prompt: "Search by title, author, or ISBN")
                 }
             }
             .navigationTitle("BookShelf")
             .toolbar {
-                ToolbarItem(placement: .primaryAction) {
+                ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showingAddSheet = true
                     } label: {
@@ -56,9 +43,42 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $showingAddSheet) {
-                AddBookView(viewModel: viewModel)
+                AddBookSheet(
+                    title: $newTitle,
+                    author: $newAuthor,
+                    isbn: $newISBN,
+                    onSave: addBook,
+                    onCancel: resetForm
+                )
+            }
+            .alert("Duplicate Book", isPresented: $showDuplicateAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("You already have this book in your collection!")
             }
         }
+    }
+
+    private func addBook() {
+        let trimmedTitle = newTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAuthor = newAuthor.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedISBN = newISBN.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if viewModel.isDuplicate(title: trimmedTitle, author: trimmedAuthor) ||
+           viewModel.isbnExists(trimmedISBN) {
+            showDuplicateAlert = true
+            return
+        }
+
+        viewModel.addBook(title: trimmedTitle, author: trimmedAuthor, isbn: trimmedISBN)
+        resetForm()
+        showingAddSheet = false
+    }
+
+    private func resetForm() {
+        newTitle = ""
+        newAuthor = ""
+        newISBN = ""
     }
 }
 
@@ -72,8 +92,8 @@ struct BookRow: View {
             Text(book.author)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-            if let isbn = book.isbn, !isbn.isEmpty {
-                Text("ISBN: \(isbn)")
+            if !book.isbn.isEmpty {
+                Text("ISBN: \(book.isbn)")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -82,35 +102,37 @@ struct BookRow: View {
     }
 }
 
-struct AddBookView: View {
-    @ObservedObject var viewModel: BookViewModel
+struct AddBookSheet: View {
+    @Binding var title: String
+    @Binding var author: String
+    @Binding var isbn: String
+    let onSave: () -> Void
+    let onCancel: () -> Void
+
     @Environment(\.dismiss) private var dismiss
 
-    @State private var title = ""
-    @State private var author = ""
-    @State private var isbn = ""
-    @State private var showingDuplicateAlert = false
-    @State private var duplicateMessage = ""
-
-    var isValid: Bool {
-        !title.trimmingCharacters(in: .whitespaces).isEmpty &&
-        !author.trimmingCharacters(in: .whitespaces).isEmpty
+    private var canSave: Bool {
+        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+        !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
-                Section {
+                Section("Book Details") {
                     TextField("Title", text: $title)
+                        .textContentType(.none)
                     TextField("Author", text: $author)
+                        .textContentType(.name)
                     TextField("ISBN (optional)", text: $isbn)
+                        .textContentType(.none)
+                        .keyboardType(.numberPad)
                 }
 
                 Section {
-                    Button("Add Book") {
-                        addBook()
-                    }
-                    .disabled(!isValid)
+                    Text("Adding a book helps you avoid buying duplicates when browsing at stores.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle("Add Book")
@@ -118,42 +140,18 @@ struct AddBookView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") {
+                        onCancel()
                         dismiss()
                     }
                 }
-            }
-            .alert("Duplicate Found", isPresented: $showingDuplicateAlert) {
-                Button("Add Anyway") {
-                    saveBook()
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        onSave()
+                    }
+                    .disabled(!canSave)
                 }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text(duplicateMessage)
             }
         }
-    }
-
-    private func addBook() {
-        let trimmedTitle = title.trimmingCharacters(in: .whitespaces)
-        let trimmedAuthor = author.trimmingCharacters(in: .whitespaces)
-        let trimmedISBN = isbn.trimmingCharacters(in: .whitespaces)
-
-        if let duplicate = viewModel.findDuplicate(title: trimmedTitle, author: trimmedAuthor, isbn: trimmedISBN) {
-            duplicateMessage = "You already have \"\(duplicate.title)\" by \(duplicate.author) in your collection."
-            showingDuplicateAlert = true
-        } else {
-            saveBook()
-        }
-    }
-
-    private func saveBook() {
-        let book = Book(
-            title: title.trimmingCharacters(in: .whitespaces),
-            author: author.trimmingCharacters(in: .whitespaces),
-            isbn: isbn.trimmingCharacters(in: .whitespaces).isEmpty ? nil : isbn.trimmingCharacters(in: .whitespaces)
-        )
-        viewModel.addBook(book)
-        dismiss()
     }
 }
 
